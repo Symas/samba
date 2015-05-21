@@ -46,6 +46,7 @@ struct rootdse_private_data {
 	bool block_anonymous;
 	struct tevent_context *saved_ev;
 	struct tevent_context *private_ev;
+	bool openLDAPbackend;
 };
 
 struct rootdse_context {
@@ -921,8 +922,9 @@ static int rootdse_init(struct ldb_module *module)
 	const char *attrs[] = { "msDS-Behavior-Version", NULL };
 	const char *ds_attrs[] = { "dsServiceName", NULL };
 	TALLOC_CTX *mem_ctx;
-
+	char *backendType;
 	ldb = ldb_module_get_ctx(module);
+	backendType = ldb_get_opaque(ldb, "openLDAPbackend");
 
 	data = talloc_zero(module, struct rootdse_private_data);
 	if (data == NULL) {
@@ -934,6 +936,7 @@ static int rootdse_init(struct ldb_module *module)
 	data->num_partitions = 0;
 	data->partitions = NULL;
 	data->block_anonymous = true;
+	data->openLDAPbackend = (strcasecmp(backendType, "openldap") == 0);
 
 	ldb_module_set_private(module, data);
 
@@ -1368,7 +1371,7 @@ static int rootdse_start_trans(struct ldb_module *module)
 	struct rootdse_private_data *data = talloc_get_type_abort(ldb_module_get_private(module),
 								  struct rootdse_private_data);
 	ret = ldb_next_start_trans(module);
-	if (ret == LDB_SUCCESS) {
+	if (!data->openLDAPbackend && ret == LDB_SUCCESS) {
 		if (data->private_ev != NULL) {
 			return ldb_operr(ldb);
 		}
@@ -1389,16 +1392,18 @@ static int rootdse_end_trans(struct ldb_module *module)
 	struct rootdse_private_data *data = talloc_get_type_abort(ldb_module_get_private(module),
 								  struct rootdse_private_data);
 	ret = ldb_next_end_trans(module);
-	if (data->saved_ev == NULL) {
-		return ldb_operr(ldb);
-	}
+	if (!data->openLDAPbackend) {
+		if (data->saved_ev == NULL) {
+			return ldb_operr(ldb);
+		}
 
-	if (data->private_ev != ldb_get_event_context(ldb)) {
-		return ldb_operr(ldb);
+		if (data->private_ev != ldb_get_event_context(ldb)) {
+			return ldb_operr(ldb);
+		}
+		ldb_set_event_context(ldb, data->saved_ev);
+		data->saved_ev = NULL;
+		TALLOC_FREE(data->private_ev);
 	}
-	ldb_set_event_context(ldb, data->saved_ev);
-	data->saved_ev = NULL;
-	TALLOC_FREE(data->private_ev);
 	return ret;
 }
 
@@ -1409,16 +1414,17 @@ static int rootdse_del_trans(struct ldb_module *module)
 	struct rootdse_private_data *data = talloc_get_type_abort(ldb_module_get_private(module),
 								  struct rootdse_private_data);
 	ret = ldb_next_del_trans(module);
-	if (data->saved_ev == NULL) {
-		return ldb_operr(ldb);
+	if (!data->openLDAPbackend) {
+		if (data->saved_ev == NULL) {
+			return ldb_operr(ldb);
+		}
+		if (data->private_ev != ldb_get_event_context(ldb)) {
+			return ldb_operr(ldb);
+		}
+		ldb_set_event_context(ldb, data->saved_ev);
+		data->saved_ev = NULL;
+		TALLOC_FREE(data->private_ev);
 	}
-
-	if (data->private_ev != ldb_get_event_context(ldb)) {
-		return ldb_operr(ldb);
-	}
-	ldb_set_event_context(ldb, data->saved_ev);
-	data->saved_ev = NULL;
-	TALLOC_FREE(data->private_ev);
 	return ret;
 }
 

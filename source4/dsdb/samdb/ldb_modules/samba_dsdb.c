@@ -360,6 +360,11 @@ static int samba_dsdb_init(struct ldb_module *module)
 		return ret;
 	}
 
+	ret = ldb_set_opaque(ldb, "openLDAPbackend", backendType);
+	if (ret != LDB_SUCCESS) {
+		ldb_set_errstring(ldb, "Failed to set openLDAPbackend opaque");
+	}
+
 	backend_modules = NULL;
 	if (strcasecmp(backendType, "ldb") == 0) {
 		extended_dn_module = extended_dn_module_ldb;
@@ -394,6 +399,7 @@ static int samba_dsdb_init(struct ldb_module *module)
 		} else {
 			return ldb_error(ldb, LDB_ERR_OPERATIONS_ERROR, "invalid backend type");
 		}
+
 		ret = ldb_set_opaque(ldb, "readOnlySchema", (void*)1);
 		if (ret != LDB_SUCCESS) {
 			ldb_set_errstring(ldb, "Failed to set readOnlySchema opaque");
