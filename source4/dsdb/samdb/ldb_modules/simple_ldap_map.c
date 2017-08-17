@@ -301,7 +301,7 @@ static const struct ldb_map_attribute entryuuid_attributes[] =
 			},
 		},
 	},
-	{
+/*	{
 		.local_name = "name",
 		.type = LDB_MAP_RENAME,
 		.u = {
@@ -309,7 +309,7 @@ static const struct ldb_map_attribute entryuuid_attributes[] =
 				 .remote_name = "rdnValue"
 			 }
 		}
-	},
+		}, */
 	{
 		.local_name = "whenCreated",
 		.type = LDB_MAP_RENAME,
@@ -328,7 +328,7 @@ static const struct ldb_map_attribute entryuuid_attributes[] =
 			 }
 		}
 	},
-	{
+/*	{
 		.local_name = "objectClasses",
 		.type = LDB_MAP_RENAME,
 		.u = {
@@ -354,7 +354,7 @@ static const struct ldb_map_attribute entryuuid_attributes[] =
 				 .remote_name = "samba4AttributeTypes"
 			 }
 		}
-	},
+		}, */
 	{
 		.local_name = "objectCategory",
 		.type = LDB_MAP_CONVERT,
@@ -780,7 +780,7 @@ static const char * const nsuniqueid_wildcard_attributes[] = {
 static int entryuuid_init(struct ldb_module *module)
 {
         int ret;
-	ret = ldb_map_init(module, entryuuid_attributes, entryuuid_objectclasses, entryuuid_wildcard_attributes, "samba4Top", NULL);
+	ret = ldb_map_init(module, entryuuid_attributes, NULL, entryuuid_wildcard_attributes, NULL, NULL);
         if (ret != LDB_SUCCESS)
                 return ret;
 
