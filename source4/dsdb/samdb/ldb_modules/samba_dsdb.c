@@ -1,6 +1,7 @@
 /*
    Samba4 module loading module
 
+
    Copyright (C) Andrew Bartlett <abartlet@samba.org> 2009
 
    This program is free software; you can redistribute it and/or modify
@@ -287,7 +288,7 @@ static int samba_dsdb_init(struct ldb_module *module)
 	static const char *fedora_ds_modules[] = {
 		"rdn_name", NULL };
 	static const char *openldap_modules[] = {
-		NULL };
+		"rdn_name", NULL };
 	static const char *tdb_modules_list[] = {
 		"rdn_name",
 		"subtree_delete",
