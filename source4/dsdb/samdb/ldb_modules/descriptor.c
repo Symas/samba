@@ -72,174 +72,6 @@ struct descriptor_context {
 	int (*step_fn)(struct descriptor_context *);
 };
 
-static struct dom_sid *get_default_ag(TALLOC_CTX *mem_ctx,
-			       struct ldb_dn *dn,
-			       struct security_token *token,
-			       struct ldb_context *ldb)
-{
-	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
-	const struct dom_sid *domain_sid = samdb_domain_sid(ldb);
-	struct dom_sid *da_sid = dom_sid_add_rid(tmp_ctx, domain_sid, DOMAIN_RID_ADMINS);
-	struct dom_sid *ea_sid = dom_sid_add_rid(tmp_ctx, domain_sid, DOMAIN_RID_ENTERPRISE_ADMINS);
-	struct dom_sid *sa_sid = dom_sid_add_rid(tmp_ctx, domain_sid, DOMAIN_RID_SCHEMA_ADMINS);
-	struct dom_sid *dag_sid;
-	struct ldb_dn *nc_root;
-	int ret;
-
-	ret = dsdb_find_nc_root(ldb, tmp_ctx, dn, &nc_root);
-	if (ret != LDB_SUCCESS) {
-		talloc_free(tmp_ctx);
-		return NULL;
-	}
-
-	if (ldb_dn_compare(nc_root, ldb_get_schema_basedn(ldb)) == 0) {
-		if (security_token_has_sid(token, sa_sid)) {
-			dag_sid = dom_sid_dup(mem_ctx, sa_sid);
-		} else if (security_token_has_sid(token, ea_sid)) {
-			dag_sid = dom_sid_dup(mem_ctx, ea_sid);
-		} else if (security_token_has_sid(token, da_sid)) {
-			dag_sid = dom_sid_dup(mem_ctx, da_sid);
-		} else if (security_token_is_system(token)) {
-			dag_sid = dom_sid_dup(mem_ctx, sa_sid);
-		} else {
-			dag_sid = NULL;
-		}
-	} else if (ldb_dn_compare(nc_root, ldb_get_config_basedn(ldb)) == 0) {
-		if (security_token_has_sid(token, ea_sid)) {
-			dag_sid = dom_sid_dup(mem_ctx, ea_sid);
-		} else if (security_token_has_sid(token, da_sid)) {
-			dag_sid = dom_sid_dup(mem_ctx, da_sid);
-		} else if (security_token_is_system(token)) {
-			dag_sid = dom_sid_dup(mem_ctx, ea_sid);
-		} else {
-			dag_sid = NULL;
-		}
-	} else if (ldb_dn_compare(nc_root, ldb_get_default_basedn(ldb)) == 0) {
-		if (security_token_has_sid(token, da_sid)) {
-			dag_sid = dom_sid_dup(mem_ctx, da_sid);
-		} else if (security_token_has_sid(token, ea_sid)) {
-				dag_sid = dom_sid_dup(mem_ctx, ea_sid);
-		} else if (security_token_is_system(token)) {
-			dag_sid = dom_sid_dup(mem_ctx, da_sid);
-		} else {
-			dag_sid = NULL;
-		}
-	} else {
-		dag_sid = NULL;
-	}
-
-	talloc_free(tmp_ctx);
-	return dag_sid;
-}
-
-static struct security_descriptor *get_sd_unpacked(struct ldb_module *module, TALLOC_CTX *mem_ctx,
-					    const struct dsdb_class *objectclass)
-{
-	struct ldb_context *ldb = ldb_module_get_ctx(module);
-	struct security_descriptor *sd;
-	const struct dom_sid *domain_sid = samdb_domain_sid(ldb);
-
-	if (!objectclass->defaultSecurityDescriptor || !domain_sid) {
-		return NULL;
-	}
-
-	sd = sddl_decode(mem_ctx,
-			 objectclass->defaultSecurityDescriptor,
-			 domain_sid);
-	return sd;
-}
-
-static struct dom_sid *get_default_group(TALLOC_CTX *mem_ctx,
-					 struct ldb_context *ldb,
-					 struct dom_sid *dag)
-{
-	/*
-	 * This depends on the function level of the DC
-	 * which is 2008R2 in our case. Which means it is
-	 * higher than 2003 and we should use the
-	 * "default administrator group" also as owning group.
-	 *
-	 * This matches dcpromo for a 2003 domain
-	 * on a Windows 2008R2 DC.
-	 */
-	return dag;
-}
-
-static struct security_descriptor *descr_handle_sd_flags(TALLOC_CTX *mem_ctx,
-							 struct security_descriptor *new_sd,
-							 struct security_descriptor *old_sd,
-							 uint32_t sd_flags)
-{
-	struct security_descriptor *final_sd; 
-	/* if there is no control or control == 0 modify everything */
-	if (!sd_flags) {
-		return new_sd;
-	}
-
-	final_sd = talloc_zero(mem_ctx, struct security_descriptor);
-	final_sd->revision = SECURITY_DESCRIPTOR_REVISION_1;
-	final_sd->type = SEC_DESC_SELF_RELATIVE;
-
-	if (sd_flags & (SECINFO_OWNER)) {
-		if (new_sd->owner_sid) {
-			final_sd->owner_sid = talloc_memdup(mem_ctx, new_sd->owner_sid, sizeof(struct dom_sid));
-		}
-		final_sd->type |= new_sd->type & SEC_DESC_OWNER_DEFAULTED;
-	}
-	else if (old_sd) {
-		if (old_sd->owner_sid) {
-			final_sd->owner_sid = talloc_memdup(mem_ctx, old_sd->owner_sid, sizeof(struct dom_sid));
-		}
-		final_sd->type |= old_sd->type & SEC_DESC_OWNER_DEFAULTED;
-	}
-
-	if (sd_flags & (SECINFO_GROUP)) {
-		if (new_sd->group_sid) {
-			final_sd->group_sid = talloc_memdup(mem_ctx, new_sd->group_sid, sizeof(struct dom_sid));
-		}
-		final_sd->type |= new_sd->type & SEC_DESC_GROUP_DEFAULTED;
-	} 
-	else if (old_sd) {
-		if (old_sd->group_sid) {
-			final_sd->group_sid = talloc_memdup(mem_ctx, old_sd->group_sid, sizeof(struct dom_sid));
-		}
-		final_sd->type |= old_sd->type & SEC_DESC_GROUP_DEFAULTED;
-	}
-
-	if (sd_flags & (SECINFO_SACL)) {
-		final_sd->sacl = security_acl_dup(mem_ctx,new_sd->sacl);
-		final_sd->type |= new_sd->type & (SEC_DESC_SACL_PRESENT |
-			SEC_DESC_SACL_DEFAULTED|SEC_DESC_SACL_AUTO_INHERIT_REQ |
-			SEC_DESC_SACL_AUTO_INHERITED|SEC_DESC_SACL_PROTECTED |
-			SEC_DESC_SERVER_SECURITY);
-	} 
-	else if (old_sd && old_sd->sacl) {
-		final_sd->sacl = security_acl_dup(mem_ctx,old_sd->sacl);
-		final_sd->type |= old_sd->type & (SEC_DESC_SACL_PRESENT |
-			SEC_DESC_SACL_DEFAULTED|SEC_DESC_SACL_AUTO_INHERIT_REQ |
-			SEC_DESC_SACL_AUTO_INHERITED|SEC_DESC_SACL_PROTECTED |
-			SEC_DESC_SERVER_SECURITY);
-	}
-
-	if (sd_flags & (SECINFO_DACL)) {
-		final_sd->dacl = security_acl_dup(mem_ctx,new_sd->dacl);
-		final_sd->type |= new_sd->type & (SEC_DESC_DACL_PRESENT |
-			SEC_DESC_DACL_DEFAULTED|SEC_DESC_DACL_AUTO_INHERIT_REQ |
-			SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_PROTECTED |
-			SEC_DESC_DACL_TRUSTED);
-	} 
-	else if (old_sd && old_sd->dacl) {
-		final_sd->dacl = security_acl_dup(mem_ctx,old_sd->dacl);
-		final_sd->type |= old_sd->type & (SEC_DESC_DACL_PRESENT |
-			SEC_DESC_DACL_DEFAULTED|SEC_DESC_DACL_AUTO_INHERIT_REQ |
-			SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_PROTECTED |
-			SEC_DESC_DACL_TRUSTED);
-	}
-	/* not so sure about this */
-	final_sd->type |= new_sd->type & SEC_DESC_RM_CONTROL_VALID;
-	return final_sd;
-}
-
 static DATA_BLOB *get_new_descriptor(struct ldb_module *module,
 				     struct ldb_dn *dn,
 				     TALLOC_CTX *mem_ctx,
@@ -249,217 +81,47 @@ static DATA_BLOB *get_new_descriptor(struct ldb_module *module,
 				     const struct ldb_val *old_sd,
 				     uint32_t sd_flags)
 {
-	struct security_descriptor *user_descriptor = NULL, *parent_descriptor = NULL;
-	struct security_descriptor *old_descriptor = NULL;
-	struct security_descriptor *new_sd, *final_sd;
-	DATA_BLOB *linear_sd;
-	enum ndr_err_code ndr_err;
 	struct ldb_context *ldb = ldb_module_get_ctx(module);
 	struct auth_session_info *session_info
 		= ldb_get_opaque(ldb, "sessionInfo");
 	const struct dom_sid *domain_sid = samdb_domain_sid(ldb);
+	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
+	DATA_BLOB *linear_sd;
+	struct security_descriptor *final_sd = NULL;
 	char *sddl_sd;
-	struct dom_sid *default_owner;
-	struct dom_sid *default_group;
-	struct security_descriptor *default_descriptor = NULL;
-	struct GUID *object_list = NULL;
+	int ret;
+	SD_PARTITION partition;
+	struct ldb_dn *nc_root;
+	enum ndr_err_code ndr_err;
 
-	if (objectclass != NULL) {
-		default_descriptor = get_sd_unpacked(module, mem_ctx, objectclass);
-		object_list = talloc_zero_array(mem_ctx, struct GUID, 2);
-		if (object_list == NULL) {
-			return NULL;
-		}
-		object_list[0] = objectclass->schemaIDGUID;
-	}
-
-	if (object) {
-		user_descriptor = talloc(mem_ctx, struct security_descriptor);
-		if (!user_descriptor) {
-			return NULL;
-		}
-		ndr_err = ndr_pull_struct_blob(object, user_descriptor, 
-					       user_descriptor,
-					       (ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
-
-		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
-			talloc_free(user_descriptor);
-			return NULL;
-		}
+	ret = dsdb_find_nc_root(ldb, tmp_ctx, dn, &nc_root);
+	if (ret != LDB_SUCCESS) {
+		partition = SD_PARTITION_INVALID;
+	} else if (ldb_dn_compare(nc_root, ldb_get_schema_basedn(ldb)) == 0) {
+		 partition = SD_PARTITION_SCHEMA;
+	} else if (ldb_dn_compare(nc_root, ldb_get_config_basedn(ldb)) == 0) {
+		partition = SD_PARTITION_CONFIG;
+	} else if (ldb_dn_compare(nc_root, ldb_get_default_basedn(ldb)) == 0) {
+		 partition = SD_PARTITION_DEFAULT;
 	} else {
-		user_descriptor = default_descriptor;
+		 partition = SD_PARTITION_OTHER;
 	}
+	talloc_free(tmp_ctx);
 
-	if (old_sd) {
-		old_descriptor = talloc(mem_ctx, struct security_descriptor);
-		if (!old_descriptor) {
-			return NULL;
-		}
-		ndr_err = ndr_pull_struct_blob(old_sd, old_descriptor, 
-					       old_descriptor,
-					       (ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
-
-		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
-			talloc_free(old_descriptor);
-			return NULL;
-		}
-	}
-
-	if (parent) {
-		parent_descriptor = talloc(mem_ctx, struct security_descriptor);
-		if (!parent_descriptor) {
-			return NULL;
-		}
-		ndr_err = ndr_pull_struct_blob(parent, parent_descriptor, 
-					       parent_descriptor,
-					       (ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
-
-		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
-			talloc_free(parent_descriptor);
-			return NULL;
-		}
-	}
-
-	if (user_descriptor && default_descriptor &&
-	    (user_descriptor->dacl == NULL))
-	{
-		user_descriptor->dacl = default_descriptor->dacl;
-		user_descriptor->type |= default_descriptor->type & (
-			SEC_DESC_DACL_PRESENT |
-			SEC_DESC_DACL_DEFAULTED|SEC_DESC_DACL_AUTO_INHERIT_REQ |
-			SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_PROTECTED |
-			SEC_DESC_DACL_TRUSTED);
-	}
-
-	if (user_descriptor && default_descriptor &&
-	    (user_descriptor->sacl == NULL))
-	{
-		user_descriptor->sacl = default_descriptor->sacl;
-		user_descriptor->type |= default_descriptor->type & (
-			SEC_DESC_SACL_PRESENT |
-			SEC_DESC_SACL_DEFAULTED|SEC_DESC_SACL_AUTO_INHERIT_REQ |
-			SEC_DESC_SACL_AUTO_INHERITED|SEC_DESC_SACL_PROTECTED |
-			SEC_DESC_SERVER_SECURITY);
-	}
-
-
-	if (!(sd_flags & SECINFO_OWNER) && user_descriptor) {
-		user_descriptor->owner_sid = NULL;
-
-		/*
-		 * We need the correct owner sid
-		 * when calculating the DACL or SACL
-		 */
-		if (old_descriptor) {
-			user_descriptor->owner_sid = old_descriptor->owner_sid;
-		}
-	}
-	if (!(sd_flags & SECINFO_GROUP) && user_descriptor) {
-		user_descriptor->group_sid = NULL;
-
-		/*
-		 * We need the correct group sid
-		 * when calculating the DACL or SACL
-		 */
-		if (old_descriptor) {
-			user_descriptor->group_sid = old_descriptor->group_sid;
-		}
-	}
-	if (!(sd_flags & SECINFO_DACL) && user_descriptor) {
-		user_descriptor->dacl = NULL;
-
-		/*
-		 * We add SEC_DESC_DACL_PROTECTED so that
-		 * create_security_descriptor() skips
-		 * the unused inheritance calculation
-		 */
-		user_descriptor->type |= SEC_DESC_DACL_PROTECTED;
-	}
-	if (!(sd_flags & SECINFO_SACL) && user_descriptor) {
-		user_descriptor->sacl = NULL;
-
-		/*
-		 * We add SEC_DESC_SACL_PROTECTED so that
-		 * create_security_descriptor() skips
-		 * the unused inheritance calculation
-		 */
-		user_descriptor->type |= SEC_DESC_SACL_PROTECTED;
-	}
-
-	default_owner = get_default_ag(mem_ctx, dn,
-				       session_info->security_token, ldb);
-	default_group = get_default_group(mem_ctx, ldb, default_owner);
-	new_sd = create_security_descriptor(mem_ctx,
-					    parent_descriptor,
-					    user_descriptor,
-					    true,
-					    object_list,
-					    SEC_DACL_AUTO_INHERIT |
-					    SEC_SACL_AUTO_INHERIT,
-					    session_info->security_token,
-					    default_owner, default_group,
-					    map_generic_rights_ds);
-	if (!new_sd) {
-		return NULL;
-	}
-	final_sd = descr_handle_sd_flags(mem_ctx, new_sd, old_descriptor, sd_flags);
-
-	if (!final_sd) {
-		return NULL;
-	}
-
-	if (final_sd->dacl) {
-		final_sd->dacl->revision = SECURITY_ACL_REVISION_ADS;
-	}
-	if (final_sd->sacl) {
-		final_sd->sacl->revision = SECURITY_ACL_REVISION_ADS;
-	}
+	final_sd = security_descriptor_ds_create_as_sd(mem_ctx,
+						       session_info->security_token,
+						       domain_sid,
+						       objectclass->defaultSecurityDescriptor,
+						       &(objectclass->schemaIDGUID),
+						       parent,
+						       object,
+						       old_sd,
+						       partition,
+						       sd_flags);
 
 	sddl_sd = sddl_encode(mem_ctx, final_sd, domain_sid);
 	DEBUG(10, ("Object %s created with desriptor %s\n\n", ldb_dn_get_linearized(dn), sddl_sd));
 
-	linear_sd = talloc(mem_ctx, DATA_BLOB);
-	if (!linear_sd) {
-		return NULL;
-	}
-
-	ndr_err = ndr_push_struct_blob(linear_sd, mem_ctx,
-				       final_sd,
-				       (ndr_push_flags_fn_t)ndr_push_security_descriptor);
-	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
-		return NULL;
-	}
-
-	return linear_sd;
-}
-
-static DATA_BLOB *descr_get_descriptor_to_show(struct ldb_module *module,
-					       TALLOC_CTX *mem_ctx,
-					       struct ldb_val *sd,
-					       uint32_t sd_flags)
-{
-	struct security_descriptor *old_sd, *final_sd;
-	DATA_BLOB *linear_sd;
-	enum ndr_err_code ndr_err;
-
-	old_sd = talloc(mem_ctx, struct security_descriptor);
-	if (!old_sd) {
-		return NULL;
-	}
-	ndr_err = ndr_pull_struct_blob(sd, old_sd, 
-				       old_sd,
-				       (ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
-
-	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
-		talloc_free(old_sd);
-		return NULL;
-	}
-
-	final_sd = descr_handle_sd_flags(mem_ctx, old_sd, NULL, sd_flags);
-
-	if (!final_sd) {
-		return NULL;
-	}
 
 	linear_sd = talloc(mem_ctx, DATA_BLOB);
 	if (!linear_sd) {
@@ -522,8 +184,9 @@ static int descriptor_search_callback(struct ldb_request *req, struct ldb_reply 
 		}
 
 		if (sd_val) {
-			show_sd = descr_get_descriptor_to_show(ac->module, ac->req,
-							       sd_val, ac->sd_flags);
+			show_sd = security_descriptor_ds_get_sd_to_display(ac->req,
+									   sd_val,
+									   ac->sd_flags);
 			if (!show_sd) {
 				ret = LDB_ERR_OPERATIONS_ERROR;
 				goto fail;

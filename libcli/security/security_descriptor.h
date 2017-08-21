@@ -22,7 +22,7 @@
 #define __SECURITY_DESCRIPTOR_H__
 
 #include "librpc/gen_ndr/security.h"
-
+#include "samba_security.h"
 struct security_descriptor *security_descriptor_initialise(TALLOC_CTX *mem_ctx);
 struct security_descriptor *security_descriptor_copy(TALLOC_CTX *mem_ctx, 
 						     const struct security_descriptor *osd);
@@ -73,9 +73,15 @@ struct security_acl *security_acl_concatenate(TALLOC_CTX *mem_ctx,
                                               const struct security_acl *acl1,
                                               const struct security_acl *acl2);
 
-uint32_t map_generic_rights_ds(uint32_t access_mask);
+uint32_t security_descriptor_ds_map_generic_rights(uint32_t access_mask);
 
-struct security_descriptor *create_security_descriptor(TALLOC_CTX *mem_ctx,
+struct security_descriptor *
+security_descriptor_ds_adjust_for_sdflags(TALLOC_CTX *mem_ctx,
+					  struct security_descriptor *new_sd,
+					  struct security_descriptor *old_sd,
+					  uint32_t sd_flags);
+
+struct security_descriptor *security_descriptor_create(TALLOC_CTX *mem_ctx,
 						       struct security_descriptor *parent_sd,
 						       struct security_descriptor *creator_sd,
 						       bool is_container,
@@ -85,6 +91,18 @@ struct security_descriptor *create_security_descriptor(TALLOC_CTX *mem_ctx,
 						       struct dom_sid *default_owner, /* valid only for DS, NULL for the other RSs */
 						       struct dom_sid *default_group, /* valid only for DS, NULL for the other RSs */
 						       uint32_t (*generic_map)(uint32_t access_mask));
+
+struct security_descriptor *
+security_descriptor_ds_create_as_sd(TALLOC_CTX *mem_ctx,
+				    const struct security_token *token,
+				    const struct dom_sid *domain_sid,
+				    const char *defaultSecurityDescriptor,
+				    const struct GUID *schemaIDGUID,
+				    const struct ldb_val *parent,
+				    const struct ldb_val *object,
+				    const struct ldb_val *old_sd,
+				    SD_PARTITION partition,
+				    uint32_t sd_flags);
 
 bool security_descriptor_with_ms_nfs(const struct security_descriptor *psd);
 

@@ -29,6 +29,7 @@
 #include "includes.h"
 #include "libcli/security/security.h"
 #include "librpc/gen_ndr/ndr_security.h"
+#include "librpc/gen_ndr/ndr_misc.h"
 
 /* Todos:
  * build the security token dacl as follows:
@@ -51,7 +52,7 @@
  * generic for all security managers
  */
 
-uint32_t map_generic_rights_ds(uint32_t access_mask)
+uint32_t security_descriptor_ds_map_generic_rights(uint32_t access_mask)
 {
 	if (access_mask & SEC_GENERIC_ALL) {
 		access_mask |= SEC_ADS_GENERIC_ALL;
@@ -122,11 +123,11 @@ static bool desc_ace_has_generic(struct security_ace *ace)
 
 /* creates an ace in which the generic information is expanded */
 
-static void desc_expand_generic(struct security_ace *new_ace,
+static void security_ace_expand_generic_rights(struct security_ace *new_ace,
 				struct dom_sid *owner,
 				struct dom_sid *group)
 {
-	new_ace->access_mask = map_generic_rights_ds(new_ace->access_mask);
+	new_ace->access_mask = security_descriptor_ds_map_generic_rights(new_ace->access_mask);
 	if (dom_sid_equal(&new_ace->trustee, &global_sid_Creator_Owner)) {
 		new_ace->trustee = *owner;
 	}
@@ -215,7 +216,7 @@ static struct security_acl *calculate_inherited_from_parent(TALLOC_CTX *mem_ctx,
 						    return NULL;
 					    }
 					    tmp_acl->aces[tmp_acl->num_aces] = *ace;
-					    desc_expand_generic(&tmp_acl->aces[tmp_acl->num_aces],
+					    security_ace_expand_generic_rights(&tmp_acl->aces[tmp_acl->num_aces],
 								owner,
 								group);
 					    tmp_acl->aces[tmp_acl->num_aces].flags = SEC_ACE_FLAG_INHERITED_ACE;
@@ -286,7 +287,7 @@ static struct security_acl *process_user_acl(TALLOC_CTX *mem_ctx,
 		 * and another one where these are translated */
 		if (desc_ace_has_generic(ace)) {
 			if (!(ace->flags & SEC_ACE_FLAG_CONTAINER_INHERIT)) {
-				desc_expand_generic(&tmp_acl->aces[tmp_acl->num_aces-1],
+				security_ace_expand_generic_rights(&tmp_acl->aces[tmp_acl->num_aces-1],
 						    owner,
 						    group);
 			} else {
@@ -297,7 +298,7 @@ static struct security_acl *process_user_acl(TALLOC_CTX *mem_ctx,
 							       tmp_acl->num_aces+1);
 				/* add a new ACE with expanded generic info */
 				tmp_acl->aces[tmp_acl->num_aces] = *ace;
-				desc_expand_generic(&tmp_acl->aces[tmp_acl->num_aces],
+				security_ace_expand_generic_rights(&tmp_acl->aces[tmp_acl->num_aces],
 						    owner,
 						    group);
 				tmp_acl->num_aces++;
@@ -313,7 +314,7 @@ static struct security_acl *process_user_acl(TALLOC_CTX *mem_ctx,
 	return new_acl;
 }
 
-static void cr_descr_log_descriptor(struct security_descriptor *sd,
+static void security_descriptor_log(struct security_descriptor *sd,
 				    const char *message,
 				    int level)
 {
@@ -401,8 +402,8 @@ static bool compute_acl(struct security_descriptor *parent_sd,
 					     object_list,
 					     creator_sd->type & SEC_DESC_SACL_PROTECTED);
 	}
-	cr_descr_log_descriptor(parent_sd, __location__"parent_sd", level);
-	cr_descr_log_descriptor(creator_sd,__location__ "creator_sd", level);
+	security_descriptor_log(parent_sd, __location__"parent_sd", level);
+	security_descriptor_log(creator_sd,__location__ "creator_sd", level);
 
 	new_sd->dacl = security_acl_concatenate(new_sd, user_dacl, inherited_dacl);
 	if (new_sd->dacl) {
@@ -423,11 +424,12 @@ static bool compute_acl(struct security_descriptor *parent_sd,
 	 * apprantly any AI flag provided by the user is preserved */
 	if (creator_sd)
 		new_sd->type |= creator_sd->type;
-	cr_descr_log_descriptor(new_sd, __location__"final sd", level);
+	security_descriptor_log(new_sd, __location__"final sd", level);
 	return true;
 }
 
-struct security_descriptor *create_security_descriptor(TALLOC_CTX *mem_ctx,
+struct security_descriptor *
+security_descriptor_create(TALLOC_CTX *mem_ctx,
 						       struct security_descriptor *parent_sd,
 						       struct security_descriptor *creator_sd,
 						       bool is_container,
@@ -491,4 +493,476 @@ struct security_descriptor *create_security_descriptor(TALLOC_CTX *mem_ctx,
 	}
 
 	return new_sd;
+}
+
+static struct dom_sid *
+security_descriptor_ds_get_default_admin_group(TALLOC_CTX *mem_ctx,
+					       SD_PARTITION partition,
+					       const struct security_token *token,
+					       const struct dom_sid *domain_sid)
+{
+	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
+	struct dom_sid *da_sid = dom_sid_add_rid(tmp_ctx, domain_sid, DOMAIN_RID_ADMINS);
+	struct dom_sid *ea_sid = dom_sid_add_rid(tmp_ctx, domain_sid, DOMAIN_RID_ENTERPRISE_ADMINS);
+	struct dom_sid *sa_sid = dom_sid_add_rid(tmp_ctx, domain_sid, DOMAIN_RID_SCHEMA_ADMINS);
+	struct dom_sid *dag_sid;
+
+	if (token == NULL) {
+		return NULL;
+	}
+
+	switch (partition) {
+	case SD_PARTITION_SCHEMA:
+		if (security_token_has_sid(token, sa_sid)) {
+			dag_sid = dom_sid_dup(mem_ctx, sa_sid);
+		} else if (security_token_has_sid(token, ea_sid)) {
+			dag_sid = dom_sid_dup(mem_ctx, ea_sid);
+		} else if (security_token_has_sid(token, da_sid)) {
+			dag_sid = dom_sid_dup(mem_ctx, da_sid);
+		} else if (security_token_is_system(token)) {
+			dag_sid = dom_sid_dup(mem_ctx, sa_sid);
+		} else {
+			dag_sid = NULL;
+		}
+		break;
+	case SD_PARTITION_CONFIG:
+		if (security_token_has_sid(token, ea_sid)) {
+			dag_sid = dom_sid_dup(mem_ctx, ea_sid);
+		} else if (security_token_has_sid(token, da_sid)) {
+			dag_sid = dom_sid_dup(mem_ctx, da_sid);
+		} else if (security_token_is_system(token)) {
+			dag_sid = dom_sid_dup(mem_ctx, ea_sid);
+		} else {
+			dag_sid = NULL;
+		}
+		break;
+	case SD_PARTITION_DEFAULT:
+		if (security_token_has_sid(token, da_sid)) {
+			dag_sid = dom_sid_dup(mem_ctx, da_sid);
+		} else if (security_token_has_sid(token, ea_sid)) {
+				dag_sid = dom_sid_dup(mem_ctx, ea_sid);
+		} else if (security_token_is_system(token)) {
+			dag_sid = dom_sid_dup(mem_ctx, da_sid);
+		} else {
+			dag_sid = NULL;
+		}
+		break;
+
+	case SD_PARTITION_OTHER:
+	case SD_PARTITION_INVALID:
+	default:
+		dag_sid = NULL;
+	}
+	talloc_free(tmp_ctx);
+	return dag_sid;
+}
+
+struct security_descriptor *
+security_descriptor_ds_adjust_for_sdflags(TALLOC_CTX *mem_ctx,
+					  struct security_descriptor *new_sd,
+					  struct security_descriptor *old_sd,
+					  uint32_t sd_flags)
+{
+	struct security_descriptor *final_sd;
+	/* if there is no control or control == 0 modify everything */
+	if (!sd_flags) {
+		return new_sd;
+	}
+
+	final_sd = talloc_zero(mem_ctx, struct security_descriptor);
+	final_sd->revision = SECURITY_DESCRIPTOR_REVISION_1;
+	final_sd->type = SEC_DESC_SELF_RELATIVE;
+
+	if (sd_flags & (SECINFO_OWNER)) {
+		if (new_sd->owner_sid) {
+			final_sd->owner_sid = talloc_memdup(mem_ctx, new_sd->owner_sid, sizeof(struct dom_sid));
+		}
+		final_sd->type |= new_sd->type & SEC_DESC_OWNER_DEFAULTED;
+	}
+	else if (old_sd) {
+		if (old_sd->owner_sid) {
+			final_sd->owner_sid = talloc_memdup(mem_ctx, old_sd->owner_sid, sizeof(struct dom_sid));
+		}
+		final_sd->type |= old_sd->type & SEC_DESC_OWNER_DEFAULTED;
+	}
+
+	if (sd_flags & (SECINFO_GROUP)) {
+		if (new_sd->group_sid) {
+			final_sd->group_sid = talloc_memdup(mem_ctx, new_sd->group_sid, sizeof(struct dom_sid));
+		}
+		final_sd->type |= new_sd->type & SEC_DESC_GROUP_DEFAULTED;
+	}
+	else if (old_sd) {
+		if (old_sd->group_sid) {
+			final_sd->group_sid = talloc_memdup(mem_ctx, old_sd->group_sid, sizeof(struct dom_sid));
+		}
+		final_sd->type |= old_sd->type & SEC_DESC_GROUP_DEFAULTED;
+	}
+
+	if (sd_flags & (SECINFO_SACL)) {
+		final_sd->sacl = security_acl_dup(mem_ctx,new_sd->sacl);
+		final_sd->type |= new_sd->type & (SEC_DESC_SACL_PRESENT |
+			SEC_DESC_SACL_DEFAULTED|SEC_DESC_SACL_AUTO_INHERIT_REQ |
+			SEC_DESC_SACL_AUTO_INHERITED|SEC_DESC_SACL_PROTECTED |
+			SEC_DESC_SERVER_SECURITY);
+	}
+	else if (old_sd && old_sd->sacl) {
+		final_sd->sacl = security_acl_dup(mem_ctx,old_sd->sacl);
+		final_sd->type |= old_sd->type & (SEC_DESC_SACL_PRESENT |
+			SEC_DESC_SACL_DEFAULTED|SEC_DESC_SACL_AUTO_INHERIT_REQ |
+			SEC_DESC_SACL_AUTO_INHERITED|SEC_DESC_SACL_PROTECTED |
+			SEC_DESC_SERVER_SECURITY);
+	}
+
+	if (sd_flags & (SECINFO_DACL)) {
+		final_sd->dacl = security_acl_dup(mem_ctx,new_sd->dacl);
+		final_sd->type |= new_sd->type & (SEC_DESC_DACL_PRESENT |
+			SEC_DESC_DACL_DEFAULTED|SEC_DESC_DACL_AUTO_INHERIT_REQ |
+			SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_PROTECTED |
+			SEC_DESC_DACL_TRUSTED);
+	}
+	else if (old_sd && old_sd->dacl) {
+		final_sd->dacl = security_acl_dup(mem_ctx,old_sd->dacl);
+		final_sd->type |= old_sd->type & (SEC_DESC_DACL_PRESENT |
+			SEC_DESC_DACL_DEFAULTED|SEC_DESC_DACL_AUTO_INHERIT_REQ |
+			SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_PROTECTED |
+			SEC_DESC_DACL_TRUSTED);
+	}
+	/* not so sure about this */
+	final_sd->type |= new_sd->type & SEC_DESC_RM_CONTROL_VALID;
+	return final_sd;
+}
+
+static struct dom_sid *security_descriptor_get_default_group(TALLOC_CTX *mem_ctx,
+						  struct dom_sid *dag)
+{
+	/*
+	 * This depends on the function level of the DC
+	 * which is 2008R2 in our case. Which means it is
+	 * higher than 2003 and we should use the
+	 * "default administrator group" also as owning group.
+	 *
+	 * This matches dcpromo for a 2003 domain
+	 * on a Windows 2008R2 DC.
+	 */
+	return dag;
+}
+
+DATA_BLOB *security_descriptor_ds_get_sd_to_display(TALLOC_CTX *mem_ctx,
+						    const DATA_BLOB *sd,
+						    uint32_t sd_flags)
+{
+	struct security_descriptor *final_sd;
+	DATA_BLOB *linear_sd;
+	enum ndr_err_code ndr_err;
+	struct security_descriptor *old_sd;
+
+	old_sd = talloc(mem_ctx, struct security_descriptor);
+	if (!old_sd) {
+		return NULL;
+	}
+	ndr_err = ndr_pull_struct_blob(sd, old_sd,
+				       old_sd,
+				       (ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
+
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		talloc_free(old_sd);
+		return NULL;
+	}
+
+	final_sd = security_descriptor_ds_adjust_for_sdflags(mem_ctx, old_sd, NULL, sd_flags);
+
+	if (!final_sd) {
+		return NULL;
+	}
+
+	linear_sd = talloc(mem_ctx, DATA_BLOB);
+	if (!linear_sd) {
+		return NULL;
+	}
+
+	ndr_err = ndr_push_struct_blob(linear_sd, mem_ctx,
+				       final_sd,
+				       (ndr_push_flags_fn_t)ndr_push_security_descriptor);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		return NULL;
+	}
+
+	return linear_sd;
+}
+
+
+
+
+struct security_descriptor *security_descriptor_ds_create_as_sd(TALLOC_CTX *mem_ctx,
+								const struct security_token *token,
+								const struct dom_sid *domain_sid,
+								const char *defaultSecurityDescriptor,
+								const struct GUID *schemaIDGUID,
+								const DATA_BLOB *parent,
+								const DATA_BLOB *object,
+								const DATA_BLOB *old_sd,
+								SD_PARTITION partition,
+								uint32_t sd_flags)
+{
+	struct security_descriptor *user_descriptor = NULL, *parent_descriptor = NULL;
+	struct security_descriptor *old_descriptor = NULL;
+	struct security_descriptor *new_sd, *final_sd;
+	enum ndr_err_code ndr_err;
+	struct dom_sid *default_owner;
+	struct dom_sid *default_group;
+	struct security_descriptor *default_descriptor = NULL;
+	struct GUID *object_list = NULL;
+
+	if (defaultSecurityDescriptor != NULL) {
+		if (domain_sid != NULL) {
+			default_descriptor = sddl_decode(mem_ctx,
+							 defaultSecurityDescriptor,
+							 domain_sid);
+		}
+		object_list = talloc_zero_array(mem_ctx, struct GUID, 2);
+		if (object_list == NULL) {
+			return NULL;
+		}
+		if (schemaIDGUID != NULL) {
+			object_list[0] = *schemaIDGUID;
+		}
+	}
+
+	if (object) {
+		user_descriptor = talloc(mem_ctx, struct security_descriptor);
+		if (!user_descriptor) {
+			return NULL;
+		}
+		ndr_err = ndr_pull_struct_blob(object, user_descriptor,
+					       user_descriptor,
+					       (ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
+
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			talloc_free(user_descriptor);
+			return NULL;
+		}
+	} else {
+		user_descriptor = default_descriptor;
+	}
+
+	if (old_sd) {
+		old_descriptor = talloc(mem_ctx, struct security_descriptor);
+		if (!old_descriptor) {
+			return NULL;
+		}
+		ndr_err = ndr_pull_struct_blob(old_sd, old_descriptor,
+					       old_descriptor,
+					       (ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
+
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			talloc_free(old_descriptor);
+			return NULL;
+		}
+	}
+
+	if (parent) {
+		parent_descriptor = talloc(mem_ctx, struct security_descriptor);
+		if (!parent_descriptor) {
+			return NULL;
+		}
+		ndr_err = ndr_pull_struct_blob(parent, parent_descriptor,
+					       parent_descriptor,
+					       (ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
+
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			talloc_free(parent_descriptor);
+			return NULL;
+		}
+	}
+
+	if (user_descriptor && default_descriptor &&
+	    (user_descriptor->dacl == NULL))
+	{
+		user_descriptor->dacl = default_descriptor->dacl;
+		user_descriptor->type |= default_descriptor->type & (
+			SEC_DESC_DACL_PRESENT |
+			SEC_DESC_DACL_DEFAULTED|SEC_DESC_DACL_AUTO_INHERIT_REQ |
+			SEC_DESC_DACL_AUTO_INHERITED|SEC_DESC_DACL_PROTECTED |
+			SEC_DESC_DACL_TRUSTED);
+	}
+
+	if (user_descriptor && default_descriptor &&
+	    (user_descriptor->sacl == NULL))
+	{
+		user_descriptor->sacl = default_descriptor->sacl;
+		user_descriptor->type |= default_descriptor->type & (
+			SEC_DESC_SACL_PRESENT |
+			SEC_DESC_SACL_DEFAULTED|SEC_DESC_SACL_AUTO_INHERIT_REQ |
+			SEC_DESC_SACL_AUTO_INHERITED|SEC_DESC_SACL_PROTECTED |
+			SEC_DESC_SERVER_SECURITY);
+	}
+
+
+	if (!(sd_flags & SECINFO_OWNER) && user_descriptor) {
+		user_descriptor->owner_sid = NULL;
+
+		/*
+		 * We need the correct owner sid
+		 * when calculating the DACL or SACL
+		 */
+		if (old_descriptor) {
+			user_descriptor->owner_sid = old_descriptor->owner_sid;
+		}
+	}
+	if (!(sd_flags & SECINFO_GROUP) && user_descriptor) {
+		user_descriptor->group_sid = NULL;
+
+		/*
+		 * We need the correct group sid
+		 * when calculating the DACL or SACL
+		 */
+		if (old_descriptor) {
+			user_descriptor->group_sid = old_descriptor->group_sid;
+		}
+	}
+	if (!(sd_flags & SECINFO_DACL) && user_descriptor) {
+		user_descriptor->dacl = NULL;
+
+		/*
+		 * We add SEC_DESC_DACL_PROTECTED so that
+		 * create_security_descriptor() skips
+		 * the unused inheritance calculation
+		 */
+		user_descriptor->type |= SEC_DESC_DACL_PROTECTED;
+	}
+	if (!(sd_flags & SECINFO_SACL) && user_descriptor) {
+		user_descriptor->sacl = NULL;
+
+		/*
+		 * We add SEC_DESC_SACL_PROTECTED so that
+		 * create_security_descriptor() skips
+		 * the unused inheritance calculation
+		 */
+		user_descriptor->type |= SEC_DESC_SACL_PROTECTED;
+	}
+
+	default_owner = security_descriptor_ds_get_default_admin_group(mem_ctx, partition,
+								       token, domain_sid);
+	default_group = security_descriptor_get_default_group(mem_ctx, default_owner);
+	new_sd = security_descriptor_create(mem_ctx,
+					    parent_descriptor,
+					    user_descriptor,
+					    true,
+					    object_list,
+					    SEC_DACL_AUTO_INHERIT |
+					    SEC_SACL_AUTO_INHERIT,
+					    token,
+					    default_owner, default_group,
+					    security_descriptor_ds_map_generic_rights);
+	if (!new_sd) {
+		return NULL;
+	}
+	final_sd = security_descriptor_ds_adjust_for_sdflags(mem_ctx, new_sd, old_descriptor, sd_flags);
+
+	if (!final_sd) {
+		return NULL;
+	}
+
+	if (final_sd->dacl) {
+		final_sd->dacl->revision = SECURITY_ACL_REVISION_ADS;
+	}
+	if (final_sd->sacl) {
+		final_sd->sacl->revision = SECURITY_ACL_REVISION_ADS;
+	}
+
+	return final_sd;
+}
+
+/* TODO mem_ctx must always be deleted after use, the function does not free on error */
+DATA_BLOB *security_descriptor_ds_create_as_blob(TALLOC_CTX *mem_ctx,
+						 const DATA_BLOB *blob_token,
+						 const DATA_BLOB *blob_domain_sid,
+						 const char *defaultSecurityDescriptor,
+						 const DATA_BLOB *blob_schemaIDGUID,
+						 const DATA_BLOB *parent,
+						 const DATA_BLOB *object,
+						 const DATA_BLOB *old_sd,
+						 SD_PARTITION partition,
+						 uint32_t sd_flags,
+						 char **out_as_sddl)
+{
+	DATA_BLOB *linear_sd;
+	struct security_descriptor *final_sd = NULL;
+	enum ndr_err_code ndr_err;
+	struct security_token *token;
+	struct dom_sid *domain_sid;
+	struct GUID *schemaIDGUID = NULL;
+
+	if (blob_token) {
+		token = talloc(mem_ctx, struct security_token);
+		if (!token) {
+			return NULL;
+		}
+		ndr_err = ndr_pull_struct_blob(blob_token, token,
+					       token,
+					       (ndr_pull_flags_fn_t)ndr_pull_security_token);
+
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			talloc_free(token);
+			token = NULL;
+		}
+	}
+
+	if (blob_domain_sid) {
+		domain_sid = talloc(mem_ctx, struct dom_sid);
+		if (!domain_sid) {
+			return NULL;
+		}
+               ndr_err = ndr_pull_struct_blob(blob_domain_sid, mem_ctx,
+                                              domain_sid,
+                                              (ndr_pull_flags_fn_t)ndr_pull_dom_sid);
+
+               if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+                       talloc_free(domain_sid);
+                       domain_sid = NULL;
+	       }
+	}
+
+	if (blob_schemaIDGUID) {
+		schemaIDGUID = talloc(mem_ctx, struct GUID);
+		ndr_err = ndr_pull_struct_blob(blob_schemaIDGUID, schemaIDGUID,
+					       schemaIDGUID,
+					       (ndr_pull_flags_fn_t)ndr_pull_GUID);
+
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			talloc_free(schemaIDGUID);
+			return NULL;
+		}
+	}
+
+	final_sd = security_descriptor_ds_create_as_sd(mem_ctx,
+						       token,
+						       domain_sid,
+						       defaultSecurityDescriptor,
+						       schemaIDGUID,
+						       parent,
+						       object,
+						       old_sd,
+						       partition,
+						       sd_flags);
+
+	linear_sd = talloc(mem_ctx, DATA_BLOB);
+	if (!linear_sd) {
+		return NULL;
+	}
+
+	ndr_err = ndr_push_struct_blob(linear_sd, mem_ctx,
+				       final_sd,
+				       (ndr_push_flags_fn_t)ndr_push_security_descriptor);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		talloc_free(linear_sd);
+		return NULL;
+	}
+	if (linear_sd != NULL && final_sd != NULL) {
+		*out_as_sddl = sddl_encode(mem_ctx, final_sd, domain_sid);
+	}
+
+	return linear_sd;
+
 }
