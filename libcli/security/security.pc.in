@@ -1,0 +1,10 @@
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+Name: samba-security
+Description: A collection of samba access check functions
+Version: @PACKAGE_VERSION@
+Libs: @LIB_RPATH@ -L${libdir} -lsamba-security
+Cflags: -I${includedir}
