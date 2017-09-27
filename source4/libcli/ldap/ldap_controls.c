@@ -20,10 +20,17 @@
 */
 
 #include "includes.h"
+
+#include <ldb.h>
+
 #include "../lib/util/asn1.h"
 #include "libcli/ldap/libcli_ldap.h"
 #include "libcli/ldap/ldap_proto.h"
 #include "dsdb/samdb/samdb.h"
+#include "librpc/ndr/libndr.h"
+#include "librpc/gen_ndr/ndr_security.h"
+#include "libcli/security/security.h"
+
 
 static bool decode_server_sort_response(void *mem_ctx, DATA_BLOB in, void *_out)
 {
@@ -1241,6 +1248,22 @@ static bool decode_flag_request(void *mem_ctx, DATA_BLOB in, void *_out)
 	return true;
 }
 
+static bool encode_sec_token(void *mem_ctx, void *in, DATA_BLOB *out)
+{
+	struct security_token *token = (struct security_token *)in;
+	enum ndr_err_code ndr_err;
+	
+	ndr_err = ndr_push_struct_blob(out, mem_ctx,
+				       token,
+				       (ndr_push_flags_fn_t)ndr_push_security_token);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		return false;
+	}
+	return true;
+}
+
+
+
 static const struct ldap_control_handler ldap_known_controls[] = {
 	{ LDB_CONTROL_PAGED_RESULTS_OID, decode_paged_results_request, encode_paged_results_request },
 	{ LDB_CONTROL_SD_FLAGS_OID, decode_sd_flags_request, encode_sd_flags_request },
@@ -1264,6 +1287,7 @@ static const struct ldap_control_handler ldap_known_controls[] = {
 	{ LDB_CONTROL_RELAX_OID, decode_flag_request, encode_flag_request },
 	{ DSDB_OPENLDAP_DEREFERENCE_CONTROL, decode_openldap_dereference, encode_openldap_dereference },
 	{ LDB_CONTROL_VERIFY_NAME_OID, decode_verify_name_request, encode_verify_name_request },
+	{ DSDB_CONTROL_SEC_TOKEN_OID, NULL, encode_sec_token },
 
 	/* the following are internal only, with a network
 	   representation */

@@ -288,7 +288,9 @@ static int samba_dsdb_init(struct ldb_module *module)
 	static const char *fedora_ds_modules[] = {
 		"rdn_name", NULL };
 	static const char *openldap_modules[] = {
-		"rdn_name", NULL };
+		"rdn_name",
+		"sec_token_control",
+		NULL };
 	static const char *tdb_modules_list[] = {
 		"rdn_name",
 		"subtree_delete",

@@ -138,6 +138,9 @@ struct dsdb_control_password_change {
  */
 #define DSDB_CONTROL_SEC_DESC_PROPAGATION_OID "1.3.6.1.4.1.7165.4.3.21"
 
+/* used to send the security token to the openLDAP backend */
+#define DSDB_CONTROL_SEC_TOKEN_OID "1.3.6.1.4.1.7165.4.3.22"
+
 /*
  * passed when creating a interdomain trust account through LSA
  * to relax constraints in the samldb ldb module.

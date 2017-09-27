@@ -592,8 +592,7 @@ interface security
 		[in] sec_desc_buf sd_buf
 		);
 
-	/* This is not yet sent over the network, but is simply defined in IDL */
-	typedef [public] struct {
+	typedef [gensize,nosize,public,flag(NDR_LITTLE_ENDIAN)] struct {
 		uint32 num_sids;
 		[size_is(num_sids)] dom_sid sids[*];
 		se_privilege privilege_mask;
