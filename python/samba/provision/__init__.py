@@ -1232,7 +1232,41 @@ def fill_samdb(samdb, lp, names, logger, policyguid,
 
     if next_rid is None:
         next_rid = 1000
+    # The LDIF here was created when the Schema object was constructed
+    logger.info("Setting up sam.ldb schema")
+    samdb.add_ldif(schema.schema_dn_add, controls=["relax:0"])
+    samdb.modify_ldif(schema.schema_dn_modify)
+    samdb.write_prefixes_from_schema()
 
+    #while True:
+    error_count = 0
+    repeat = True
+    while (repeat):
+        print "Adding schema objects"
+        for changetype, msg in samdb.parse_ldif(schema.schema_data):
+            assert changetype == ldb.CHANGETYPE_NONE
+            #print msg
+            #time.sleep(1)
+            try:
+                samdb.add(msg, controls=["relax:0"])
+            except ldb.LdbError, (enum, estr):
+                if enum != ldb.ERR_ENTRY_ALREADY_EXISTS:
+                    error_count = error_count + 1
+                    #print msg
+                    print "Error "
+                    print enum
+        if error_count > 0:
+            repeat = True
+            error_count = 0
+        else:
+            repeat = False
+            #time.sleep(10)
+            #print "Error count "
+            #print error_count
+            #break
+    #samdb.add_ldif(schema.schema_data, controls=["relax:0"])
+    setup_add_ldif(samdb, setup_path("aggregate_schema.ldif"),
+                   {"SCHEMADN": names.schemadn})
     # Provision does not make much sense values larger than 1000000000
     # as the upper range of the rIDAvailablePool is 1073741823 and
     # we don't want to create a domain that cannot allocate rids.
@@ -1314,13 +1348,13 @@ def fill_samdb(samdb, lp, names, logger, policyguid,
                     })
 
             # The LDIF here was created when the Schema object was constructed
-            logger.info("Setting up sam.ldb schema")
-            samdb.add_ldif(schema.schema_dn_add, controls=["relax:0"])
-            samdb.modify_ldif(schema.schema_dn_modify)
-            samdb.write_prefixes_from_schema()
-            samdb.add_ldif(schema.schema_data, controls=["relax:0"])
-            setup_add_ldif(samdb, setup_path("aggregate_schema.ldif"),
-                           {"SCHEMADN": names.schemadn})
+            #logger.info("Setting up sam.ldb schema")
+            #samdb.add_ldif(schema.schema_dn_add, controls=["relax:0"])
+            #samdb.modify_ldif(schema.schema_dn_modify)
+            #samdb.write_prefixes_from_schema()
+            #samdb.add_ldif(schema.schema_data, controls=["relax:0"])
+            #setup_add_ldif(samdb, setup_path("aggregate_schema.ldif"),
+            #               {"SCHEMADN": names.schemadn})
 
         # Now register this container in the root of the forest
         msg = ldb.Message(ldb.Dn(samdb, names.domaindn))
