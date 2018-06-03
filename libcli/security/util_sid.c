@@ -393,3 +393,22 @@ bool is_null_sid(const struct dom_sid *sid)
 	static const struct dom_sid null_sid = {0};
 	return dom_sid_equal(sid, &null_sid);
 }
+
+
+/********************************************************************
+ Convert SID to DATA_BLOB
+********************************************************************/
+
+bool sid_to_blob(TALLOC_CTX *mem_ctx, struct dom_sid *sid,
+		 DATA_BLOB *out)
+{
+	enum ndr_err_code ndr_err;
+
+	ndr_err = ndr_push_struct_blob(out, mem_ctx, sid,
+				       (ndr_push_flags_fn_t)ndr_push_dom_sid);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		return false;
+	}
+
+	return true;
+}

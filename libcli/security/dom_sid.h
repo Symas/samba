@@ -107,6 +107,7 @@ void del_sid_from_array(const struct dom_sid *sid, struct dom_sid **sids,
 bool add_rid_to_array_unique(TALLOC_CTX *mem_ctx,
 			     uint32_t rid, uint32_t **pp_rids, size_t *p_num);
 bool is_null_sid(const struct dom_sid *sid);
-
+bool sid_to_blob(TALLOC_CTX *mem_ctx, struct dom_sid *sid,
+		 DATA_BLOB *out);
 #endif /*_DOM_SID_H_*/
 
